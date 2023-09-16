@@ -1,7 +1,7 @@
 use std::{error::Error, fs::File, io::Write, path::PathBuf, time::{UNIX_EPOCH, SystemTime, Duration}};
 
 use again::RetryPolicy;
-use chinese_dictionary::{tokenize, query_by_chinese, WordEntry, ClassificationResult};
+use chinese_dictionary::{tokenize, query_by_chinese, WordEntry, ClassificationResult, classify};
 use config::Config;
 use futures::future::join_all;
 use genanki_rs::{Field, Model, Deck, Template, Note, Package};
@@ -132,7 +132,7 @@ impl Token {
     fn build_reading_allow_multiple(&self) -> Option<String> {
         match &self.word_entry {
             Some(word_entry) => {
-                let reading = word_entry.into_iter().map(|word| word.derive_zhuyin()).join(", ");
+                let reading = word_entry.into_iter().map(|word| word.derive_zhuyin()).join(",");
                 match reading.len() {
                     0 => None,
                     _ => Some(reading),
@@ -190,11 +190,29 @@ struct SimilarWord {
 }
 
 impl SimilarWord {
-    fn build_string(&self) -> String {
-        let word_entry = query_by_chinese(&self.word)[0];
+    fn build_string(&self, reading: &MandarinReading) -> String {
+        let query_result = query_by_chinese(&self.word);
+        let mut reading_str = String::from("");
+        match reading {
+            MandarinReading::Zhuyin => {
+                if query_result[0].traditional.chars().count() == self.word.chars().count() {
+                    reading_str.push_str(&query_result[0].derive_zhuyin());
+                } else {
+                    reading_str.push_str(&query_result.iter().map(|word| word.derive_zhuyin()).join(","));
+                }
+            },
+            MandarinReading::Pinyin => {
+                if query_result[0].traditional.chars().count() == self.word.chars().count() {
+                    reading_str.push_str(&query_result[0].pinyin_marks);
+                } else {
+                    reading_str.push_str(&query_result.iter().map(|word| &word.pinyin_marks).join(" "));
+                }
+            },
+        }
+        
         let mut output = String::from(&self.word);
         output.push_str(", ");
-        output.push_str(&word_entry.derive_zhuyin());
+        output.push_str(&reading_str);
         output.push_str(", ");
         output.push_str(&self.translation);
         output
@@ -209,7 +227,7 @@ impl DeriveZhuyin for WordEntry {
     fn derive_zhuyin(&self) -> String {
         return self.pinyin_numbers.split_whitespace()
             .map(|pinyin| encode_zhuyin(pinyin).or(Some(pinyin.to_string())).unwrap())
-            .collect();
+            .join(",");
     }
 }
 
@@ -414,7 +432,7 @@ async fn get_transliteration(mandarin_text: &str, client: &Client, genanki_confi
         .preserve_miscellaneous(true);
     let zhuyin_reading = pinyin_parser.parse(&pinyin_reading).into_iter()
         .map(|pinyin_token| pinyin_zhuyin::pinyin_to_zhuyin(&pinyin_token).or(Some(pinyin_token)).unwrap())
-        .join(", ");
+        .join(",");
     debug!("Zhuyin Reading from Pinyin: {}", zhuyin_reading);
 
     (pinyin_reading, zhuyin_reading)
@@ -479,17 +497,14 @@ async fn get_similar_words(word: &str, client: &Client, openai_config: &OpenAICo
     debug!("Json From OpenAI: {:#?}", json);
 
     let message = json["choices"][0]["message"]["content"].as_str().unwrap();
-    let mut chatgpt_csv_reader = csv::ReaderBuilder::new()
-        .flexible(true)
-        .has_headers(false)
-        .from_reader(message.as_bytes());
+
+    let rows = message.split("\n").map(|row| row.split(",").collect_vec()).collect_vec();
 
     let mut similar_words: Vec<SimilarWord> = Vec::new();
 
-    for row in chatgpt_csv_reader.records() {
-        let row = row.unwrap();
-        if row.len() == 2 && chinese_dictionary::classify(&row[0]) == ClassificationResult::ZH { //Rows with actual csv content
-            let similar_word: SimilarWord = row.deserialize(None).unwrap();
+    for row in rows {
+        if row.len() >= 2 && classify(&row[0]) == ClassificationResult::ZH { //Rows with actual csv content
+            let similar_word = SimilarWord { word: row[0].trim().to_string(), translation: row[1].trim().to_string() };
             similar_words.push(similar_word);
         }
     }
@@ -513,19 +528,21 @@ async fn process_word(word_model: Model, token: &Token, definition: Option<Strin
         },
     };
 
+    let config = CONFIG.get().unwrap();
+    
     let client = reqwest::Client::new();
 
     let definition = match definition {
         Some(definition) => definition.to_owned(),
         None => match token.build_definition() {
             Some(definition) => definition,
-            None => get_translation(&token.text, &client, &CONFIG.get().unwrap().azure).await,
+            None => get_translation(&token.text, &client, &config.azure).await,
         },
     };
     debug!("Built Word Definition: {}", definition);
-    let audio = get_tts(&token.text, tempdir, &client, &CONFIG.get().unwrap().azure).await;
-    let similar_words = get_similar_words(&token.text, &client, &CONFIG.get().unwrap().openai).await;
-    let similar_words_string = similar_words.into_iter().map(|word| word.build_string()).join("<br>");
+    let audio = get_tts(&token.text, tempdir, &client, &config.azure).await;
+    let similar_words = get_similar_words(&token.text, &client, &config.openai).await;
+    let similar_words_string = similar_words.into_iter().map(|word| word.build_string(&config.mandarin.reading)).join("<br>");
     debug!("Built Similar Words for Note: {:#?}", similar_words_string);
 
     let word_note = build_word_note(word_model, token, definition, &audio, similar_words_string);
@@ -554,6 +571,8 @@ async fn process_sentence(sentence_model: Model, sentence: &MandarinSentence, de
         return None;
     }
 
+    let config = CONFIG.get().unwrap();
+
     let client = reqwest::Client::new();
 
     let plain_sentence = sentence.build_plain_sentence();
@@ -563,16 +582,16 @@ async fn process_sentence(sentence_model: Model, sentence: &MandarinSentence, de
     debug!("Built Sentence for Note: {}", note_sentence);
     let definition = match definition {
         Some(definition) => definition.to_owned(),
-        None => get_translation(&plain_sentence, &client, &CONFIG.get().unwrap().azure).await
+        None => get_translation(&plain_sentence, &client, &config.azure).await
     };
     debug!("Built Definition: {}", definition);
-    let (pinyin_reading, zhuyin_reading) = get_transliteration(&sentence.raw_sentence, &client, &CONFIG.get().unwrap()).await;
-    let note_reading = match &CONFIG.get().unwrap().mandarin.reading {
+    let (pinyin_reading, zhuyin_reading) = get_transliteration(&sentence.raw_sentence, &client, &config).await;
+    let note_reading = match &config.mandarin.reading {
         MandarinReading::Zhuyin => build_note_reading(&zhuyin_reading),
         MandarinReading::Pinyin => build_note_reading(&pinyin_reading),
     };
     debug!("Built Reading for Note: {}", note_reading);
-    let audio = get_tts(&plain_sentence, tempdir, &client, &CONFIG.get().unwrap().azure).await;
+    let audio = get_tts(&plain_sentence, tempdir, &client, &config.azure).await;
 
     let sentence_note = build_sentence_note(sentence_model, note_sentence, definition, &audio, note_reading);
     debug!("Built Sentence Note");
@@ -623,7 +642,7 @@ async fn main() -> Result<(), Box<dyn Error>>{
                 info!("Found Word: {}", hanzi);
                 let model_clone = word_model.clone();
                 let tempdir_clone = tempdir.path().to_owned();
-                handles.push(tokio::spawn(async move {
+                                handles.push(tokio::spawn(async move {
                     process_word(model_clone, &tokenised_sentence[0], definition, tempdir_clone).await
                 }));
             },
@@ -632,7 +651,7 @@ async fn main() -> Result<(), Box<dyn Error>>{
                 let model_clone = sentence_model.clone();
                 let tempdir_clone = tempdir.path().to_owned();
                 let tokenised_sentence = MandarinSentence { raw_sentence: hanzi.to_owned(), tokens: tokenised_sentence };
-                handles.push(tokio::spawn(async move {
+                                handles.push(tokio::spawn(async move {
                     process_sentence(model_clone, &tokenised_sentence, definition, tempdir_clone).await
                 }));
             },
@@ -659,6 +678,13 @@ async fn main() -> Result<(), Box<dyn Error>>{
 fn test_parse_config() {
     let config = parse_config();
     println!("Parsed Config: {:#?}", config);
+}
+
+#[test]
+fn test_derive_zhuyin() {
+    let word = query_by_chinese("刮目");
+    println!("Parsed Word: {:#?}", word);
+    println!("Generated Sentence: {:#?}", word[0].derive_zhuyin());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
