@@ -414,7 +414,7 @@ async fn get_transliteration(mandarin_text: &str, client: &Client, genanki_confi
         .preserve_miscellaneous(true);
     let zhuyin_reading = pinyin_parser.parse(&pinyin_reading).into_iter()
         .map(|pinyin_token| pinyin_zhuyin::pinyin_to_zhuyin(&pinyin_token).or(Some(pinyin_token)).unwrap())
-        .collect::<String>();
+        .join(", ");
     debug!("Zhuyin Reading from Pinyin: {}", zhuyin_reading);
 
     (pinyin_reading, zhuyin_reading)
