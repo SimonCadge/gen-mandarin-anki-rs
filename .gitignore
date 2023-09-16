@@ -1,0 +1,6 @@
+/target
+.vscode
+input.csv
+output.apkg
+trace.log
+config.yml
