@@ -430,27 +430,9 @@ async fn get_transliteration(mandarin_text: &str, client: &Client, genanki_confi
     let pinyin_parser = PinyinParser::new()
         .preserve_punctuations(true)
         .preserve_miscellaneous(true);
-    let zhuyin_reading = pinyin_parser.parse(&pinyin_reading.replace(" ", ","))
+    let zhuyin_reading = pinyin_parser.parse(&pinyin_reading.replace(" ", ",").replace("，,", "，"))
         .map(|pinyin_token| pinyin_zhuyin::pinyin_to_zhuyin(&pinyin_token).or(Some(pinyin_token)).unwrap())
         .collect::<String>();
-    // let zhuyin_reading = pinyin_reading.split_whitespace().into_iter()
-    //     .flat_map(|chunk| chunk.split('*').fold(vec![], |mut acc, ele| {
-    //         match acc.len() {
-    //             0 => acc.push(ele),
-    //             _ => {acc.push("*"); acc.push(ele)}
-    //             }
-    //             acc
-    //     }))
-    //     .map(|pinyin_chunk| pinyin_parser.parse(pinyin_chunk).into_iter()
-    //         .map(|pinyin_token| pinyin_zhuyin::pinyin_to_zhuyin(&pinyin_token).or(Some(pinyin_token)).unwrap())
-    //         .collect::<String>()
-    //     ).fold(String::from(""), |mut acc, elem| {
-    //         if elem != "*" && acc.len() > 0 && acc.bytes().last() != Some(b'*') {
-    //             acc.push(',');
-    //         }
-    //         acc.push_str(&elem);
-    //         acc
-    //     });
         
     debug!("Zhuyin Reading from Pinyin: {}", zhuyin_reading);
 
