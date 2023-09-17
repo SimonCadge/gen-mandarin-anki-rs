@@ -1,4 +1,4 @@
-use std::{error::Error, fs::File, io::Write, path::PathBuf, time::{UNIX_EPOCH, SystemTime, Duration}, iter};
+use std::{error::Error, fs::File, io::Write, path::PathBuf, time::{UNIX_EPOCH, SystemTime, Duration}};
 
 use again::RetryPolicy;
 use chinese_dictionary::{tokenize, query_by_chinese, WordEntry, ClassificationResult, classify};
