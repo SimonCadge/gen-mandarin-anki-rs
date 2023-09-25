@@ -1,0 +1,21 @@
+model:
+  word_model_id: 2042078444
+  sentence_model_id: 1736562913
+  deck_id: 1972709696
+
+azure:
+  translator:
+    key: some translator key #https://learn.microsoft.com/en-us/azure/ai-services/translator/quickstart-text-sdk?pivots=programming-language-python
+  speech:
+    key: some speech key #https://learn.microsoft.com/en-GB/azure/ai-services/speech-service/get-started-text-to-speech?tabs=windows%2Cterminal&pivots=programming-language-rest
+    voice_name: zh-TW-YunJheNeural #https://learn.microsoft.com/en-GB/azure/ai-services/speech-service/language-support?tabs=tts#prebuilt-neural-voices
+    locale: zh-TW #See above link
+  region: uksouth #Should be the same between your translator and speech services
+
+openai:
+  key: some openai key #https://platform.openai.com/docs/api-reference/authentication
+  organisation: some openai org #See above link
+
+mandarin:
+  script: Traditional #or Simplified
+  reading: Zhuyin #or Pinyin

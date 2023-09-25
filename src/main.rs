@@ -1,4 +1,4 @@
-use std::{error::Error, fs::File, io::Write, path::PathBuf, time::{UNIX_EPOCH, SystemTime, Duration}};
+use std::{error::Error, fs::File, io::Write, path::PathBuf, time::{UNIX_EPOCH, SystemTime, Duration}, fmt};
 
 use again::RetryPolicy;
 use chinese_dictionary::{tokenize, query_by_chinese, WordEntry, ClassificationResult, classify};
@@ -75,6 +75,15 @@ enum MandarinScript {
     #[default]
     Traditional,
     Simplified,
+}
+
+impl fmt::Display for MandarinScript {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+       match self {
+           MandarinScript::Traditional => write!(f, "Traditional Chinese"),
+           MandarinScript::Simplified => write!(f, "Simplified Chinese"),
+       }
+    }
 }
 
 impl MandarinScript {
@@ -341,6 +350,12 @@ fn tokenise_sentence(original_sentence: &str) -> Vec<Token> {
         token_at_index.push(value);
         current_index += token.len()
     }
+    if current_index < original_sentence.len() {
+        for non_mandarin_char in original_sentence[current_index..original_sentence.len()].chars() {
+            let non_mandarin_token = Token { text: non_mandarin_char.to_string(), word_entry: Option::None};
+            token_at_index.push(non_mandarin_token);
+        }
+    }
     return token_at_index;
 }
 
@@ -464,12 +479,12 @@ async fn _get_available_transliteration_scripts(client: &Client) {
     println!("{:#?}", json["transliteration"]["zh-Hant"]);
 }
 
-async fn get_similar_words(word: &str, client: &Client, openai_config: &OpenAIConfig) -> Vec<SimilarWord> {
+async fn get_similar_words(word: &str, client: &Client, genanki_config: &GenankiConfig) -> Vec<SimilarWord> {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_str("application/json").unwrap());
-    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", openai_config.key)).unwrap());
-    if openai_config.organisation.is_some() {
-        headers.insert(HeaderName::from_lowercase(b"openai-organization").unwrap(), HeaderValue::from_str(openai_config.organisation.as_ref().unwrap()).unwrap());
+    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", genanki_config.openai.key)).unwrap());
+    if genanki_config.openai.organisation.is_some() {
+        headers.insert(HeaderName::from_lowercase(b"openai-organization").unwrap(), HeaderValue::from_str(genanki_config.openai.organisation.as_ref().unwrap()).unwrap());
     }
 
     let res = retry_policy().retry(||
@@ -484,8 +499,9 @@ async fn get_similar_words(word: &str, client: &Client, openai_config: &OpenAICo
                     },
                     {
                         "role": "user",
-                        "content": format!("Generate 5 words closely related to {word} which are used commonly in Taiwanese Mandarin.
-                                            You should provide the words in Traditional Chinese and the English Translation in CSV format with two columns.")
+                        "content": format!("Generate 5 words closely related to {} which are used commonly in Taiwanese Mandarin.
+                                            You should provide the words in {} and the English Translation in CSV format with two columns.",
+                                        word, genanki_config.mandarin.script)
                     }
                 ]
             }))
@@ -542,7 +558,7 @@ async fn process_word(word_model: Model, token: &Token, definition: Option<Strin
     };
     debug!("Built Word Definition: {}", definition);
     let audio = get_tts(&token.text, tempdir, &client, &config.azure).await;
-    let similar_words = get_similar_words(&token.text, &client, &config.openai).await;
+    let similar_words = get_similar_words(&token.text, &client, &config).await;
     let similar_words_string = similar_words.into_iter().map(|word| word.build_string(&config.mandarin.reading)).join("<br>");
     debug!("Built Similar Words for Note: {:#?}", similar_words_string);
 
@@ -688,6 +704,16 @@ fn test_derive_zhuyin() {
     println!("Generated Sentence: {:#?}", word[0].derive_zhuyin());
 }
 
+#[test]
+fn test_build_note_sentence() {
+    let hanzi = String::from("你今天看起來很*時尚*");
+    let tokens = tokenise_sentence(&hanzi);
+    let sentence = MandarinSentence{raw_sentence: hanzi, tokens: tokens};
+    let note_sentence = sentence.build_note_sentence();
+    println!("Note sentence: {}", note_sentence);
+    assert!(note_sentence.contains("</span>"))
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_get_available_voices() {
     let client = reqwest::Client::new();
@@ -731,7 +757,7 @@ async fn test_get_transliteration() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_get_similar_word() {
     let client = reqwest::Client::new();
-    let similar_words = get_similar_words("你好", &client, &parse_config().openai).await;
+    let similar_words = get_similar_words("你好", &client, &parse_config()).await;
     println!("Got Similar Words: {:#?}", similar_words);
     assert!(similar_words.len() > 0);
 }
