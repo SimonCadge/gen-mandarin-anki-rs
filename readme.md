@@ -15,6 +15,10 @@ Now that you have set everything up correctly, just run the rust binary and it w
 Now, open the Anki app on your Mac/PC and select `file/import` and point it to the `output.apkg` file.  
 Any errors should be printed to the terminal as the script is running, but running the binary will also have created a `trace.log` file which has much more verbose logging. If there are any errors with your connection to any of the APIs you should be able to tell from there what happened.
 ## Input Format
+**IMPORTANT - Commas must not have spaces after them (unlike what is shown in the example images). This is due to a bug with the CSV parsing library, which [I have raised to their attention](https://github.com/BurntSushi/rust-csv/issues/337).**  
+This doesn't apply to a comma within a quoted sentence, this example shows proper formatting with a sentence which includes a comma and one that doesn't:
+![better input file](/images/example_input_proper_formatting.png)
+
 A small example of a typical `input.csv` file looks like this:
 ![example input file](/images/example_input.png)
 On the first line I have entered a Mandarin sentence, followed by the English translation. In the Mandarin sentence I have surrounded the word I am most interested in with \*stars\*, which the script will interpret and will highlight that word and the accompanying reading in the final flashcard.  

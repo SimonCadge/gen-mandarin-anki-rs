@@ -2,7 +2,7 @@ use std::{error::Error, fs::File, io::Write, path::PathBuf, time::{UNIX_EPOCH, S
 
 use again::RetryPolicy;
 use chinese_dictionary::{tokenize, query_by_chinese, WordEntry, ClassificationResult, classify};
-use config::Config;
+use config::{Config, FileStoredFormat};
 use futures::future::join_all;
 use genanki_rs::{Field, Model, Deck, Template, Note, Package};
 use itertools::Itertools;
@@ -646,6 +646,7 @@ async fn main() -> Result<(), Box<dyn Error>>{
     let mut input_csv_reader = csv::ReaderBuilder::new()
         .flexible(true)
         .has_headers(false)
+        .trim(csv::Trim::All)
         .from_path("input.csv")?;
     let mut media: Vec<AudioFile> = Vec::new();
     let mut handles = Vec::new();
@@ -712,6 +713,23 @@ fn test_build_note_sentence() {
     let note_sentence = sentence.build_note_sentence();
     println!("Note sentence: {}", note_sentence);
     assert!(note_sentence.contains("</span>"))
+}
+
+#[test]
+fn test_parse_csv() {
+    let data = "\
+    我的頭髮太厚了，我要打薄, \"My hair is too thick, I need to thin it out\"
+    我朋友是個街友*基金會*的員工, My friend works at a homelessness charity
+    基金會
+    ";
+    let mut input_csv_reader = csv::ReaderBuilder::new()
+        .flexible(true)
+        .has_headers(false)
+        // .trim(csv::Trim::All)
+        .from_reader(data.as_bytes());
+    let first_row = input_csv_reader.records().next().unwrap().unwrap();
+    println!("First Row: {:?}", first_row);
+    assert_eq!(first_row.len(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
