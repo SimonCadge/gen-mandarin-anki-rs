@@ -23,3 +23,4 @@ simplelog = "0.12.1"
 tempfile = "3.8.0"
 tokio = { version = "1.32.0", features = ["rt-multi-thread", "macros"] }
 url-escape = "0.1.1"
+rustyline = "13.0.0"

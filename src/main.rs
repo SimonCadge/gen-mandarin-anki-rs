@@ -1,4 +1,4 @@
-use std::{error::Error, fs::File, io::Write, path::PathBuf, time::{UNIX_EPOCH, SystemTime, Duration}, fmt};
+use std::{any::Any, error::Error, fmt, fs::File, io::Write, panic, path::PathBuf, time::{UNIX_EPOCH, SystemTime, Duration}};
 
 use again::RetryPolicy;
 use chinese_dictionary::{tokenize, query_by_chinese, WordEntry, ClassificationResult, classify};
@@ -241,7 +241,7 @@ impl DeriveZhuyin for WordEntry {
 }
 
 fn retry_policy() -> RetryPolicy {
-    RetryPolicy::exponential(Duration::from_secs(1)).with_jitter(true)
+    RetryPolicy::exponential(Duration::from_secs(1)).with_jitter(true).with_max_delay(Duration::from_secs(120))
 }
 
 fn init_deck(model_config: &ModelConfig) -> (Deck, Model, Model) {
@@ -441,17 +441,35 @@ async fn get_transliteration(mandarin_text: &str, client: &Client, genanki_confi
 
     let pinyin_reading = json[0]["text"].as_str().unwrap().to_owned();
     debug!("Pinyin Reading from Transliteration: {}", pinyin_reading);
+    
+    let zhuyin_reading = convert_pinyin_to_zhuyin(&pinyin_reading);
 
+    match zhuyin_reading {
+        Ok(zhuyin_reading) => {
+            debug!("Zhuyin Reading from Pinyin: {}", zhuyin_reading);
+        
+            (pinyin_reading, zhuyin_reading)
+        },
+        Err(..) => {
+            let mut rl = rustyline::DefaultEditor::new().unwrap();
+            let line = rl.readline_with_initial ("Error in parsing pinyin, probably due to a word ending in u without being followed by an apostrophe. Please attempt a fix:", (&pinyin_reading, "")).unwrap();
+            let zhuyin_reading = convert_pinyin_to_zhuyin(&line);
+            (pinyin_reading, zhuyin_reading.unwrap())
+        }
+    }
+        
+}
+
+fn convert_pinyin_to_zhuyin(pinyin_reading: &String) -> Result<String, Box<dyn Any + Send>> {
     let pinyin_parser = PinyinParser::new()
         .preserve_punctuations(true)
         .preserve_miscellaneous(true);
-    let zhuyin_reading = pinyin_parser.parse(&pinyin_reading.replace(" ", ",").replace("，,", "，"))
+    let zhuyin_reading = panic::catch_unwind(|| {
+        pinyin_parser.parse(&pinyin_reading.replace(" ", ",").replace("，,", "，"))
         .map(|pinyin_token| pinyin_zhuyin::pinyin_to_zhuyin(&pinyin_token).or(Some(pinyin_token)).unwrap())
-        .collect::<String>();
-        
-    debug!("Zhuyin Reading from Pinyin: {}", zhuyin_reading);
-
-    (pinyin_reading, zhuyin_reading)
+        .collect::<String>()
+    });
+    zhuyin_reading
 }
 
 fn build_note_reading(reading: &str) -> String {
@@ -469,7 +487,7 @@ fn build_note_reading(reading: &str) -> String {
     }).collect::<String>()
 }
 
-async fn _get_available_transliteration_scripts(client: &Client) {
+async fn get_available_transliteration_scripts(client: &Client) {
     let res = client.get("https://api.cognitive.microsofttranslator.com/languages?api-version=3.0&scope=transliteration")
         .send()
         .await
@@ -752,7 +770,7 @@ async fn test_get_tts() {
 async fn test_get_available_transliteration_scripts() {
     let client = reqwest::Client::new();
     //Just run and check stdout
-    _get_available_transliteration_scripts(&client).await;
+    get_available_transliteration_scripts(&client).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
