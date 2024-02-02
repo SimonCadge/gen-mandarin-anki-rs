@@ -3,7 +3,7 @@ use std::{any::Any, error::Error, fmt, fs::File, io::Write, panic, path::PathBuf
 use again::RetryPolicy;
 use chinese_dictionary::{tokenize, query_by_chinese, WordEntry, ClassificationResult, classify};
 use config::{Config, FileStoredFormat};
-use futures::future::join_all;
+use futures::{future::join_all, FutureExt};
 use genanki_rs::{Field, Model, Deck, Template, Note, Package};
 use itertools::Itertools;
 use log::{LevelFilter, info, warn, debug, trace};
@@ -387,10 +387,11 @@ async fn get_tts(text: &str, tempdir: PathBuf, client: &Client, azure_config: &A
                     {2}
                 </voice>
             </speak>", &azure_config.speech.locale, &azure_config.speech.voice_name, text))
-            .send())
+            .send()
+            .map(|res| res.unwrap().error_for_status())
+        )
         .await.unwrap();
     trace!("Response from TTS: {:#?}", res);
-    let res = res.error_for_status().unwrap();
 
     let bytes = res.bytes().await.unwrap();
 
@@ -413,10 +414,11 @@ async fn get_translation(mandarin_text: &str, client: &Client, azure_config: &Az
             .header("Ocp-Apim-Subscription-Region", &azure_config.region)
             .header("Content-Type", "application/json; charset=UTF-8")
             .json(&json!([{"text": mandarin_text}]))
-            .send())
+            .send()
+            .map(|res| res.unwrap().error_for_status())
+        )
         .await.unwrap();
     trace!("Translation Response: {:#?}", res);
-    let res = res.error_for_status().unwrap();
     
     let json = res.json::<Value>().await.unwrap();
     let english_text = json[0]["translations"][0]["text"].as_str().unwrap();
@@ -431,10 +433,11 @@ async fn get_transliteration(mandarin_text: &str, client: &Client, genanki_confi
             .header("Ocp-Apim-Subscription-Region", &genanki_config.azure.region)
             .header("Content-Type", "application/json; charset=UTF-8")
             .json(&json!([{"text": mandarin_text}]))
-            .send())
+            .send()
+            .map(|res| res.unwrap().error_for_status())
+        )
         .await.unwrap();
     trace!("Transliteration Response: {:#?}", res);
-    let res = res.error_for_status().unwrap();
     
     let json = res.json::<Value>().await.unwrap();
     debug!("Json From Transliteration: {:#?}", json);
@@ -523,10 +526,11 @@ async fn get_similar_words(word: &str, client: &Client, genanki_config: &Genanki
                     }
                 ]
             }))
-            .send())
+            .send()
+            .map(|res| res.unwrap().error_for_status())
+        )
         .await.unwrap();
     trace!("OpenAI Response: {:#?}", res);
-    let res = res.error_for_status().unwrap();
 
     let json = res.json::<Value>().await.unwrap();
     debug!("Json From OpenAI: {:#?}", json);
