@@ -2,7 +2,7 @@ use std::{any::Any, error::Error, fmt, fs::File, io::Write, panic, path::PathBuf
 
 use again::RetryPolicy;
 use chinese_dictionary::{tokenize, query_by_chinese, WordEntry, ClassificationResult, classify};
-use config::{Config, FileStoredFormat};
+use config::Config;
 use futures::{future::join_all, FutureExt};
 use genanki_rs::{Field, Model, Deck, Template, Note, Package};
 use itertools::Itertools;
@@ -14,6 +14,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use simplelog::{CombinedLogger, TermLogger, WriteLogger, TerminalMode, ColorChoice};
 use tokio::sync::OnceCell;
+use rand::distributions::{Alphanumeric, DistString};
 
 static CONFIG: OnceCell<GenankiConfig> = OnceCell::const_new();
 
@@ -396,7 +397,8 @@ async fn get_tts(text: &str, tempdir: PathBuf, client: &Client, azure_config: &A
     let bytes = res.bytes().await.unwrap();
 
     let encoded_text = url_escape::encode_component(text);
-    let file_destination = tempdir.join(format!("{encoded_text}.mp3"));
+    let salt = Alphanumeric.sample_string(&mut rand::thread_rng(), 5);
+    let file_destination = tempdir.join(format!("{:-<10.10}{}.mp3", encoded_text, salt));
     debug!("Audio Temp File: {}", file_destination.display());
 
     let mut file = File::create(&file_destination).unwrap();
