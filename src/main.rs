@@ -1,4 +1,4 @@
-use std::{any::Any, error::Error, fmt, fs::File, io::Write, panic, path::PathBuf, time::{UNIX_EPOCH, SystemTime, Duration}};
+use std::{any::Any, error::Error, fmt, fs::File, io::Write, panic, path::PathBuf, time::{UNIX_EPOCH, SystemTime, Duration}, sync::Arc};
 
 use again::RetryPolicy;
 use chinese_dictionary::{tokenize, query_by_chinese, WordEntry, ClassificationResult, classify};
@@ -13,7 +13,7 @@ use reqwest::{Client, header::{HeaderMap, CONTENT_TYPE, AUTHORIZATION, HeaderVal
 use serde::Deserialize;
 use serde_json::{Value, json};
 use simplelog::{CombinedLogger, TermLogger, WriteLogger, TerminalMode, ColorChoice};
-use tokio::sync::OnceCell;
+use tokio::sync::{OnceCell, Mutex};
 use rand::distributions::{Alphanumeric, DistString};
 
 static CONFIG: OnceCell<GenankiConfig> = OnceCell::const_new();
@@ -428,7 +428,7 @@ async fn get_translation(mandarin_text: &str, client: &Client, azure_config: &Az
     english_text.to_string()
 }
 
-async fn get_transliteration(mandarin_text: &str, client: &Client, genanki_config: &GenankiConfig) -> (String, String) {
+async fn get_transliteration(mandarin_text: &str, client: &Client, genanki_config: &GenankiConfig, mutex: Arc<Mutex<i32>>) -> (String, String) {
     let res = retry_policy().retry(||
         client.post(format!("https://api.cognitive.microsofttranslator.com/transliterate?api-version=3.0&language={}&fromScript={}&toScript=Latn", &genanki_config.mandarin.script.build_language(), &genanki_config.mandarin.script.build_from_script()))
             .header("Ocp-Apim-Subscription-Key", &genanki_config.azure.translator.key)
@@ -456,10 +456,11 @@ async fn get_transliteration(mandarin_text: &str, client: &Client, genanki_confi
             (pinyin_reading, zhuyin_reading)
         },
         Err(..) => {
+            let _lock = mutex.lock().await;
             let mut rl = rustyline::DefaultEditor::new().unwrap();
             let line = rl.readline_with_initial ("Error in parsing pinyin, probably due to a word ending in u without being followed by an apostrophe. Please attempt a fix:", (&pinyin_reading, "")).unwrap();
             let zhuyin_reading = convert_pinyin_to_zhuyin(&line);
-            (pinyin_reading, zhuyin_reading.unwrap())
+            (pinyin_reading.clone(), zhuyin_reading.unwrap_or(pinyin_reading))
         }
     }
         
@@ -554,7 +555,7 @@ async fn get_similar_words(word: &str, client: &Client, genanki_config: &Genanki
     similar_words
 }
 
-async fn process_word(word_model: Model, token: &Token, definition: Option<String>, tempdir: PathBuf) -> Option<(Note, AudioFile)> {
+async fn process_word(word_model: Model, token: &Token, definition: Option<String>, tempdir: PathBuf, mutex: Arc<Mutex<i32>>) -> Option<(Note, AudioFile)> {
     //Exit prematurely if the word is not Mandarin
     match &token.word_entry {
         Some(word_entry) => {
@@ -605,7 +606,7 @@ fn build_word_note(word_model: Model, token: &Token, definition: String, audio: 
     word_note
 }
 
-async fn process_sentence(sentence_model: Model, sentence: &MandarinSentence, definition: Option<String>, tempdir: PathBuf) -> Option<(Note, AudioFile)> {
+async fn process_sentence(sentence_model: Model, sentence: &MandarinSentence, definition: Option<String>, tempdir: PathBuf, mutex: Arc<Mutex<i32>>) -> Option<(Note, AudioFile)> {
     //Exit prematurely if none of the sentence is mandarin
     if !sentence.tokens.iter().any(|token| token.word_entry.as_ref().is_some_and(|word_entry| word_entry.len() > 0)) {
         warn!("Sentence had no recognisable Mandarin characters");
@@ -626,7 +627,7 @@ async fn process_sentence(sentence_model: Model, sentence: &MandarinSentence, de
         None => get_translation(&plain_sentence, &client, &config.azure).await
     };
     debug!("Built Definition: {}", definition);
-    let (pinyin_reading, zhuyin_reading) = get_transliteration(&sentence.raw_sentence, &client, &config).await;
+    let (pinyin_reading, zhuyin_reading) = get_transliteration(&sentence.raw_sentence, &client, &config, mutex).await;
     let note_reading = match &config.mandarin.reading {
         MandarinReading::Zhuyin => build_note_reading(&zhuyin_reading),
         MandarinReading::Pinyin => build_note_reading(&pinyin_reading),
@@ -674,6 +675,7 @@ async fn main() -> Result<(), Box<dyn Error>>{
         .from_path("input.csv")?;
     let mut media: Vec<AudioFile> = Vec::new();
     let mut handles = Vec::new();
+    let mutex = Arc::new(Mutex::new(0));
     for row in input_csv_reader.records() {
         let row = row.unwrap();
         let hanzi = row.get(0).unwrap();
@@ -684,17 +686,19 @@ async fn main() -> Result<(), Box<dyn Error>>{
                 info!("Found Word: {}", hanzi);
                 let model_clone = word_model.clone();
                 let tempdir_clone = tempdir.path().to_owned();
+                let mutex_clone = Arc::clone(&mutex);
                                 handles.push(tokio::spawn(async move {
-                    process_word(model_clone, &tokenised_sentence[0], definition, tempdir_clone).await
+                    process_word(model_clone, &tokenised_sentence[0], definition, tempdir_clone, mutex_clone).await
                 }));
             },
             2.. => {
                 info!("Found Sentence: {}", hanzi);
                 let model_clone = sentence_model.clone();
                 let tempdir_clone = tempdir.path().to_owned();
+                let mutex_clone = Arc::clone(&mutex);
                 let tokenised_sentence = MandarinSentence { raw_sentence: hanzi.to_owned(), tokens: tokenised_sentence };
                                 handles.push(tokio::spawn(async move {
-                    process_sentence(model_clone, &tokenised_sentence, definition, tempdir_clone).await
+                    process_sentence(model_clone, &tokenised_sentence, definition, tempdir_clone, mutex_clone).await
                 }));
             },
             _ => {},
@@ -789,8 +793,9 @@ async fn test_get_translation() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_get_transliteration() {
+    let mutex = Arc::new(Mutex::new(0));
     let client = reqwest::Client::new();
-    let (pinyin_reading, zhuyin_reading) = get_transliteration("都是因為媽媽太*寵*他，才會這麼軟弱", &client, &parse_config()).await;
+    let (pinyin_reading, zhuyin_reading) = get_transliteration("都是因為媽媽太*寵*他，才會這麼軟弱", &client, &parse_config(), mutex).await;
     println!("Got Pinyin: {pinyin_reading}, Zhuyin: {zhuyin_reading}");
     assert!(!pinyin_reading.is_empty());
     assert!(!zhuyin_reading.is_empty());
